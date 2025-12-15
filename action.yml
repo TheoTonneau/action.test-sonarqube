@@ -1,35 +1,51 @@
-name: 'TFLint Validation'
-description: 'Validates Terraform files using TFLint on modified directories'
+name: 'SonarQube Scan'
+description: 'Performs SonarQube analysis on the repository with detailed reporting'
 
 inputs:
   WORKING_DIRECTORY:
     required: false
-    description: ""
+    description: "Working directory for the scan"
     default: './'
-  GH_TOKEN:
+  AWS_ACCESS_KEY_ID:
     required: true
-    description: "GitHub token for authentication"
-  FAIL_ON_WARNINGS:
-    description: "Fail the action if there are warnings"
+    description: "AWS Access Key ID"
+  AWS_SECRET_ACCESS_KEY:
+    required: true
+    description: "AWS Secret Access Key"
+  AWS_REGION:
+    required: false
+    description: "AWS Region"
+    default: 'eu-west-3'
+  SONAR_PROJECT_TOKEN_SECRET_NAME:
+    required: true
+    description: "AWS Secrets Manager secret name for SonarQube project token"
+  SONAR_USER_TOKEN_SECRET_NAME:
+    required: true
+    description: "AWS Secrets Manager secret name for SonarQube user token"
+  SONAR_HOST_URL_PATH:
+    required: true
+    description: "AWS SSM parameter path for SonarQube host URL"
+  FAIL_ON_QUALITY_GATE:
+    description: "Fail the action if quality gate fails"
     required: false
     default: 'false'
 
 runs:
   using: "composite"
   steps:
-
-    - name: 'aws connection'
-      uses: aws-actions/configure-aws-credentials@v4
+    - name: 'AWS Connection'
+      uses: aws-actions/configure-aws-credentials@v5
       with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: 'eu-west-3'
+        aws-access-key-id: ${{ inputs.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ inputs.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ inputs.AWS_REGION }}
 
     - name: Get PROJECT_TOKEN from Secrets Manager
       id: get-project-token
+      shell: bash
       run: |
         SECRET_VALUE=$(aws secretsmanager get-secret-value \
-        --secret-id "${{ secrets.SONAR_PROJECT_TOKEN_SECRET_NAME }}" \
+        --secret-id "${{ inputs.SONAR_PROJECT_TOKEN_SECRET_NAME }}" \
         --query "SecretString" \
         --output text)
         echo "::add-mask::$SECRET_VALUE"
@@ -37,9 +53,10 @@ runs:
 
     - name: Get USER_TOKEN from Secrets Manager
       id: get-user-token
+      shell: bash
       run: |
         SECRET_VALUE=$(aws secretsmanager get-secret-value \
-        --secret-id "${{ secrets.SONAR_USER_TOKEN_SECRET_NAME }}" \
+        --secret-id "${{ inputs.SONAR_USER_TOKEN_SECRET_NAME }}" \
         --query "SecretString" \
         --output text)
         echo "::add-mask::$SECRET_VALUE"
@@ -47,9 +64,10 @@ runs:
 
     - name: Get HOST_URL parameter
       id: get-host-url
+      shell: bash
       run: |
         PARAM_VALUE=$(aws ssm get-parameter \
-        --name "${{ secrets.SONAR_HOST_URL_PATH }}" \
+        --name "${{ inputs.SONAR_HOST_URL_PATH }}" \
         --with-decryption \
         --query "Parameter.Value" \
         --output text)
@@ -58,6 +76,7 @@ runs:
 
     - name: "Determine Branch Name"
       id: branch-name
+      shell: bash
       run: |
         if [ "${{ github.event_name }}" == "pull_request" ]; then
           echo "branch=${{ github.head_ref }}" >> $GITHUB_OUTPUT
@@ -75,11 +94,12 @@ runs:
           -Dsonar.projectKey=${{ github.event.repository.name }}
           -Dsonar.projectName=${{ github.event.repository.name }}
           -Dsonar.projectVersion=${{ steps.branch-name.outputs.branch }}
-          -Dsonar.sources=.
+          -Dsonar.sources=${{ inputs.WORKING_DIRECTORY }}
           -Dsonar.scm.provider=git
           -Dsonar.scm.revision=${{ github.sha }}
 
     - name: Get Results and Generate Report
+      shell: bash
       env:
         SONAR_URL: ${{ steps.get-host-url.outputs.HOST_URL }}
         PROJECT_KEY: ${{ github.event.repository.name }}
@@ -291,6 +311,12 @@ runs:
         
           # Nettoyer les fichiers temporaires
           rm -f "$BUGS_DETAILS_FILE" "$VULN_DETAILS_FILE" "$SMELLS_CRITICAL_FILE" "$SMELLS_OTHER_FILE"
+        
+          # Optionnel : Faire échouer si demandé et problèmes trouvés
+          if [ "${{ inputs.FAIL_ON_QUALITY_GATE }}" = "true" ] && [ "$((BUGS + VULNERABILITIES))" -gt 0 ]; then
+            echo "❌ Quality gate failed: Found $BUGS bugs and $VULNERABILITIES vulnerabilities"
+            exit 1
+          fi
         else
           echo "❌ Error: Invalid JSON response from SonarQube API"
           echo ""
@@ -301,4 +327,5 @@ runs:
             echo ""
             echo "[🔍 View report in SonarQube →]($SONAR_URL/dashboard?id=$PROJECT_KEY)"
           } >> $GITHUB_STEP_SUMMARY
+          exit 1
         fi
