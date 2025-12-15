@@ -104,10 +104,14 @@ runs:
         SONAR_URL: ${{ steps.get-host-url.outputs.HOST_URL }}
         PROJECT_KEY: ${{ github.event.repository.name }}
         USER_TOKEN: ${{ steps.get-user-token.outputs.USER_TOKEN }}
+        FAIL_ON_QUALITY_GATE: ${{ inputs.FAIL_ON_QUALITY_GATE }}
       run: |
         sleep 10
         
         echo "📊 Fetching SonarQube results..."
+        
+        # Variable pour tracker si on doit faire échouer à la fin
+        SHOULD_FAIL=0
         
         # Fonction pour extraire le contexte du code
         get_code_context() {
@@ -307,15 +311,28 @@ runs:
             echo ""
         
             echo "[🔍 View detailed report in SonarQube →]($SONAR_URL/dashboard?id=$PROJECT_KEY)"
+        
+            # Afficher un avertissement si le quality gate va faire échouer l'action
+            if [ "$FAIL_ON_QUALITY_GATE" = "true" ] && [ "$((BUGS + VULNERABILITIES))" -gt 0 ]; then
+              echo ""
+              echo "---"
+              echo ""
+              echo "## ❌ Quality Gate Failed"
+              echo ""
+              echo "The analysis found **$BUGS bug(s)** and **$VULNERABILITIES vulnerability(ies)**."
+              echo ""
+              echo "This action will fail because \`FAIL_ON_QUALITY_GATE\` is set to \`true\`."
+            fi
           } >> $GITHUB_STEP_SUMMARY
         
           # Nettoyer les fichiers temporaires
           rm -f "$BUGS_DETAILS_FILE" "$VULN_DETAILS_FILE" "$SMELLS_CRITICAL_FILE" "$SMELLS_OTHER_FILE"
         
-          # Optionnel : Faire échouer si demandé et problèmes trouvés
-          if [ "${{ inputs.FAIL_ON_QUALITY_GATE }}" = "true" ] && [ "$((BUGS + VULNERABILITIES))" -gt 0 ]; then
+          # Déterminer si on doit faire échouer (APRÈS avoir tout affiché)
+          if [ "$FAIL_ON_QUALITY_GATE" = "true" ] && [ "$((BUGS + VULNERABILITIES))" -gt 0 ]; then
+            echo ""
             echo "❌ Quality gate failed: Found $BUGS bugs and $VULNERABILITIES vulnerabilities"
-            exit 1
+            SHOULD_FAIL=1
           fi
         else
           echo "❌ Error: Invalid JSON response from SonarQube API"
@@ -325,7 +342,17 @@ runs:
             echo ""
             echo "Failed to fetch metrics from SonarQube API."
             echo ""
+            echo "**Response received:**"
+            echo "\`\`\`"
+            echo "$RESPONSE"
+            echo "\`\`\`"
+            echo ""
             echo "[🔍 View report in SonarQube →]($SONAR_URL/dashboard?id=$PROJECT_KEY)"
           } >> $GITHUB_STEP_SUMMARY
+          SHOULD_FAIL=1
+        fi
+        
+        # Faire échouer l'action UNIQUEMENT à la toute fin, après avoir tout affiché
+        if [ $SHOULD_FAIL -eq 1 ]; then
           exit 1
         fi
