@@ -1,0 +1,53 @@
+name: Tag and Push
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  tag-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Git
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+      - name: Read version from version.txt
+        id: get_version
+        run: |
+          VERSION=$(cat version.txt)
+          echo "version=$VERSION" >> $GITHUB_ENV
+
+      - name: Check if tag exists
+        id: check_tag
+        run: |
+          if git rev-parse "refs/tags/${{ env.version }}" >/dev/null 2>&1
+          then
+            echo "Tag ${{ env.version }} already exists."
+            exit 1
+          else
+            echo "Tag ${{ env.version }} does not exist."
+          fi
+
+      - name: Create and push tag
+        if: ${{ steps.check_tag.outcome == 'success' }}
+        run: |
+          git tag ${{ env.version }}
+          git push origin ${{ env.version }}
+
+      - name: Create and push major version tag
+        if: ${{ steps.check_tag.outcome == 'success' }}
+        run: |
+          # Extract major version (v1.0.0 -> v1)
+          MAJOR_VERSION=$(echo ${{ env.version }} | sed -E 's/^v([0-9]+)\..*/\1/')
+          git tag v$MAJOR_VERSION
+          git push origin v$MAJOR_VERSION -f
