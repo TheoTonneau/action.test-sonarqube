@@ -164,9 +164,9 @@ runs:
         
         export -f get_code_context
         
-        # Récupérer les métriques globales
+        # Récupérer les métriques globales (inclus security_hotspots)
         RESPONSE=$(curl -s -u "$USER_TOKEN:" \
-          "$SONAR_URL/api/measures/component?component=$PROJECT_KEY&metricKeys=bugs,vulnerabilities,code_smells")
+          "$SONAR_URL/api/measures/component?component=$PROJECT_KEY&metricKeys=bugs,vulnerabilities,code_smells,security_hotspots")
         
         echo "Debug - Response:"
         echo "$RESPONSE"
@@ -178,11 +178,13 @@ runs:
           BUGS=$(echo "$RESPONSE" | jq -r '.component.measures[] | select(.metric=="bugs") | .value // "0"')
           VULNERABILITIES=$(echo "$RESPONSE" | jq -r '.component.measures[] | select(.metric=="vulnerabilities") | .value // "0"')
           CODE_SMELLS=$(echo "$RESPONSE" | jq -r '.component.measures[] | select(.metric=="code_smells") | .value // "0"')
+          SECURITY_HOTSPOTS=$(echo "$RESPONSE" | jq -r '.component.measures[] | select(.metric=="security_hotspots") | .value // "0"')
         
           # Afficher dans les logs
           echo "📊 SonarQube Results:"
           echo "🐛 Bugs: $BUGS"
           echo "🔓 Vulnerabilities: $VULNERABILITIES"
+          echo "🔥 Security Hotspots: $SECURITY_HOTSPOTS"
           echo "👃 Code Smells: $CODE_SMELLS"
           echo ""
           echo "🔗 View full report: $SONAR_URL/dashboard?id=$PROJECT_KEY"
@@ -190,6 +192,7 @@ runs:
           # Créer le fichier temporaire pour les détails
           BUGS_DETAILS_FILE=$(mktemp)
           VULN_DETAILS_FILE=$(mktemp)
+          HOTSPOTS_DETAILS_FILE=$(mktemp)
         
           # Récupérer et traiter les bugs avec contexte
           if [ "$BUGS" -gt 0 ]; then
@@ -218,6 +221,26 @@ runs:
                 LINE=$(echo "$issue" | jq -r '.line // "N/A"')
         
                 get_code_context "$COMPONENT" "$LINE" "$MESSAGE" "$SEVERITY" >> "$VULN_DETAILS_FILE"
+            done
+          fi
+        
+          # Récupérer et traiter les Security Hotspots
+          if [ "$SECURITY_HOTSPOTS" -gt 0 ]; then
+            echo "Fetching security hotspot details with code context..."
+            curl -s -u "$USER_TOKEN:" \
+              "$SONAR_URL/api/hotspots/search?projectKey=$PROJECT_KEY&ps=500" | \
+              jq -r '.hotspots[] | @json' | while IFS= read -r hotspot; do
+                VULNERABILITY_PROBABILITY=$(echo "$hotspot" | jq -r '.vulnerabilityProbability // "MEDIUM"')
+                MESSAGE=$(echo "$hotspot" | jq -r '.message')
+                COMPONENT=$(echo "$hotspot" | jq -r '.component | split(":") | .[-1]')
+                LINE=$(echo "$hotspot" | jq -r '.line // "N/A"')
+                SECURITY_CATEGORY=$(echo "$hotspot" | jq -r '.securityCategory // "unknown"')
+                STATUS=$(echo "$hotspot" | jq -r '.status // "TO_REVIEW"')
+        
+                # Formatter le message avec la catégorie et le statut
+                FORMATTED_MESSAGE="[$SECURITY_CATEGORY] $MESSAGE (Status: $STATUS)"
+        
+                get_code_context "$COMPONENT" "$LINE" "$FORMATTED_MESSAGE" "$VULNERABILITY_PROBABILITY" >> "$HOTSPOTS_DETAILS_FILE"
             done
           fi
         
@@ -252,6 +275,7 @@ runs:
             echo "|--------|-------|"
             echo "| 🐛 Bugs | $BUGS |"
             echo "| 🔓 Vulnerabilities | $VULNERABILITIES |"
+            echo "| 🔥 Security Hotspots | $SECURITY_HOTSPOTS |"
             echo "| 👃 Code Smells | $CODE_SMELLS |"
             echo ""
         
@@ -276,6 +300,22 @@ runs:
               cat "$VULN_DETAILS_FILE"
             else
               echo "✅ No vulnerabilities found!"
+            fi
+            echo ""
+            echo "</details>"
+            echo ""
+        
+            # Dropdown pour les Security Hotspots
+            echo "<details>"
+            echo "<summary>🔥 <strong>Security Hotspots Details ($SECURITY_HOTSPOTS)</strong></summary>"
+            echo ""
+            if [ -s "$HOTSPOTS_DETAILS_FILE" ]; then
+              echo "> **Note:** Security Hotspots are security-sensitive pieces of code that need to be manually reviewed."
+              echo "> They are not necessarily vulnerabilities but require developer attention to confirm they are secure."
+              echo ""
+              cat "$HOTSPOTS_DETAILS_FILE"
+            else
+              echo "✅ No security hotspots found!"
             fi
             echo ""
             echo "</details>"
@@ -326,7 +366,7 @@ runs:
           } >> $GITHUB_STEP_SUMMARY
         
           # Nettoyer les fichiers temporaires
-          rm -f "$BUGS_DETAILS_FILE" "$VULN_DETAILS_FILE" "$SMELLS_CRITICAL_FILE" "$SMELLS_OTHER_FILE"
+          rm -f "$BUGS_DETAILS_FILE" "$VULN_DETAILS_FILE" "$HOTSPOTS_DETAILS_FILE" "$SMELLS_CRITICAL_FILE" "$SMELLS_OTHER_FILE"
         
           # Déterminer si on doit faire échouer (APRÈS avoir tout affiché)
           if [ "$FAIL_ON_QUALITY_GATE" = "true" ] && [ "$((BUGS + VULNERABILITIES))" -gt 0 ]; then

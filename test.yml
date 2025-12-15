@@ -1,0 +1,398 @@
+name: 'SonarQube Scan'
+description: 'Performs SonarQube analysis on the repository with detailed reporting'
+
+inputs:
+  WORKING_DIRECTORY:
+    required: false
+    description: "Working directory for the scan"
+    default: './'
+  AWS_ACCESS_KEY_ID:
+    required: true
+    description: "AWS Access Key ID"
+  AWS_SECRET_ACCESS_KEY:
+    required: true
+    description: "AWS Secret Access Key"
+  AWS_REGION:
+    required: false
+    description: "AWS Region"
+    default: 'eu-west-3'
+  SONAR_PROJECT_TOKEN_SECRET_NAME:
+    required: true
+    description: "AWS Secrets Manager secret name for SonarQube project token"
+  SONAR_USER_TOKEN_SECRET_NAME:
+    required: true
+    description: "AWS Secrets Manager secret name for SonarQube user token"
+  SONAR_HOST_URL_PATH:
+    required: true
+    description: "AWS SSM parameter path for SonarQube host URL"
+  FAIL_ON_QUALITY_GATE:
+    description: "Fail the action if quality gate fails"
+    required: false
+    default: 'false'
+
+runs:
+  using: "composite"
+  steps:
+    - name: 'AWS Connection'
+      uses: aws-actions/configure-aws-credentials@v5
+      with:
+        aws-access-key-id: ${{ inputs.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ inputs.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ inputs.AWS_REGION }}
+
+    - name: Get PROJECT_TOKEN from Secrets Manager
+      id: get-project-token
+      shell: bash
+      run: |
+        SECRET_VALUE=$(aws secretsmanager get-secret-value \
+        --secret-id "${{ inputs.SONAR_PROJECT_TOKEN_SECRET_NAME }}" \
+        --query "SecretString" \
+        --output text)
+        echo "::add-mask::$SECRET_VALUE"
+        echo "PROJECT_TOKEN=$SECRET_VALUE" >> $GITHUB_OUTPUT
+
+    - name: Get USER_TOKEN from Secrets Manager
+      id: get-user-token
+      shell: bash
+      run: |
+        SECRET_VALUE=$(aws secretsmanager get-secret-value \
+        --secret-id "${{ inputs.SONAR_USER_TOKEN_SECRET_NAME }}" \
+        --query "SecretString" \
+        --output text)
+        echo "::add-mask::$SECRET_VALUE"
+        echo "USER_TOKEN=$SECRET_VALUE" >> $GITHUB_OUTPUT
+
+    - name: Get HOST_URL parameter
+      id: get-host-url
+      shell: bash
+      run: |
+        PARAM_VALUE=$(aws ssm get-parameter \
+        --name "${{ inputs.SONAR_HOST_URL_PATH }}" \
+        --with-decryption \
+        --query "Parameter.Value" \
+        --output text)
+        echo "$PARAM_VALUE"
+        echo "HOST_URL=$PARAM_VALUE" >> $GITHUB_OUTPUT
+
+    - name: "Determine Branch Name"
+      id: branch-name
+      shell: bash
+      run: |
+        if [ "${{ github.event_name }}" == "pull_request" ]; then
+          echo "branch=${{ github.head_ref }}" >> $GITHUB_OUTPUT
+        else
+          echo "branch=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+        fi
+
+    - name: "SonarQube Scan"
+      uses: sonarsource/sonarqube-scan-action@v6
+      env:
+        SONAR_TOKEN: ${{ steps.get-project-token.outputs.PROJECT_TOKEN }}
+        SONAR_HOST_URL: ${{ steps.get-host-url.outputs.HOST_URL }}
+      with:
+        args: >
+          -Dsonar.projectKey=${{ github.event.repository.name }}
+          -Dsonar.projectName=${{ github.event.repository.name }}
+          -Dsonar.projectVersion=${{ steps.branch-name.outputs.branch }}
+          -Dsonar.sources=${{ inputs.WORKING_DIRECTORY }}
+          -Dsonar.scm.provider=git
+          -Dsonar.scm.revision=${{ github.sha }}
+
+    - name: Get Results and Generate Report
+      shell: bash
+      env:
+        SONAR_URL: ${{ steps.get-host-url.outputs.HOST_URL }}
+        PROJECT_KEY: ${{ github.event.repository.name }}
+        USER_TOKEN: ${{ steps.get-user-token.outputs.USER_TOKEN }}
+        FAIL_ON_QUALITY_GATE: ${{ inputs.FAIL_ON_QUALITY_GATE }}
+      run: |
+        sleep 10
+        
+        echo "📊 Fetching SonarQube results..."
+        
+        # Variable pour tracker si on doit faire échouer à la fin
+        SHOULD_FAIL=0
+        
+        # Fonction pour extraire le contexte du code
+        get_code_context() {
+          local file=$1
+          local line=$2
+          local message=$3
+          local severity=$4
+        
+          if [ -f "$file" ] && [ "$line" != "N/A" ] && [ "$line" -gt 0 ]; then
+            local start_line=$((line - 2))
+            local end_line=$((line + 2))
+        
+            # S'assurer que start_line est au minimum 1
+            if [ $start_line -lt 1 ]; then
+              start_line=1
+            fi
+        
+            echo ""
+            echo "**$severity: $message**"
+            echo ""
+            echo "\`\`\`"
+            echo "File: $file"
+            echo "\`\`\`"
+            echo ""
+            echo "\`\`\`"
+        
+            # Extraire et afficher les lignes avec numérotation
+            sed -n "${start_line},${end_line}p" "$file" | nl -ba -v $start_line -w 4 -s " | " | while IFS= read -r code_line; do
+              current_line=$(echo "$code_line" | awk -F' \\| ' '{print $1}' | xargs)
+              if [ "$current_line" -eq "$line" ]; then
+                echo "➤ $code_line  ⚠️"
+              else
+                echo "   $code_line"
+              fi
+            done
+        
+            echo "\`\`\`"
+            echo ""
+            echo "---"
+            echo ""
+          else
+            echo "**$severity: $message**"
+            echo ""
+            echo "Location: \`$file:$line\`"
+            echo ""
+            echo "---"
+            echo ""
+          fi
+        }
+        
+        export -f get_code_context
+        
+        # Récupérer les métriques globales (inclus security_hotspots)
+        RESPONSE=$(curl -s -u "$USER_TOKEN:" \
+          "$SONAR_URL/api/measures/component?component=$PROJECT_KEY&metricKeys=bugs,vulnerabilities,code_smells,security_hotspots")
+        
+        echo "Debug - Response:"
+        echo "$RESPONSE"
+        echo ""
+        
+        # Vérifier si la réponse est du JSON valide
+        if echo "$RESPONSE" | jq empty 2>/dev/null; then
+          # Extraire les valeurs
+          BUGS=$(echo "$RESPONSE" | jq -r '.component.measures[] | select(.metric=="bugs") | .value // "0"')
+          VULNERABILITIES=$(echo "$RESPONSE" | jq -r '.component.measures[] | select(.metric=="vulnerabilities") | .value // "0"')
+          CODE_SMELLS=$(echo "$RESPONSE" | jq -r '.component.measures[] | select(.metric=="code_smells") | .value // "0"')
+          SECURITY_HOTSPOTS=$(echo "$RESPONSE" | jq -r '.component.measures[] | select(.metric=="security_hotspots") | .value // "0"')
+        
+          # Afficher dans les logs
+          echo "📊 SonarQube Results:"
+          echo "🐛 Bugs: $BUGS"
+          echo "🔓 Vulnerabilities: $VULNERABILITIES"
+          echo "🔥 Security Hotspots: $SECURITY_HOTSPOTS"
+          echo "👃 Code Smells: $CODE_SMELLS"
+          echo ""
+          echo "🔗 View full report: $SONAR_URL/dashboard?id=$PROJECT_KEY"
+        
+          # Créer le fichier temporaire pour les détails
+          BUGS_DETAILS_FILE=$(mktemp)
+          VULN_DETAILS_FILE=$(mktemp)
+          HOTSPOTS_DETAILS_FILE=$(mktemp)
+        
+          # Récupérer et traiter les bugs avec contexte
+          if [ "$BUGS" -gt 0 ]; then
+            echo "Fetching bug details with code context..."
+            curl -s -u "$USER_TOKEN:" \
+              "$SONAR_URL/api/issues/search?componentKeys=$PROJECT_KEY&types=BUG&ps=500" | \
+              jq -r '.issues[] | @json' | while IFS= read -r issue; do
+                SEVERITY=$(echo "$issue" | jq -r '.severity')
+                MESSAGE=$(echo "$issue" | jq -r '.message')
+                COMPONENT=$(echo "$issue" | jq -r '.component | split(":") | .[-1]')
+                LINE=$(echo "$issue" | jq -r '.line // "N/A"')
+        
+                get_code_context "$COMPONENT" "$LINE" "$MESSAGE" "$SEVERITY" >> "$BUGS_DETAILS_FILE"
+            done
+          fi
+        
+          # Récupérer et traiter les vulnérabilités avec contexte
+          if [ "$VULNERABILITIES" -gt 0 ]; then
+            echo "Fetching vulnerability details with code context..."
+            curl -s -u "$USER_TOKEN:" \
+              "$SONAR_URL/api/issues/search?componentKeys=$PROJECT_KEY&types=VULNERABILITY&ps=500" | \
+              jq -r '.issues[] | @json' | while IFS= read -r issue; do
+                SEVERITY=$(echo "$issue" | jq -r '.severity')
+                MESSAGE=$(echo "$issue" | jq -r '.message')
+                COMPONENT=$(echo "$issue" | jq -r '.component | split(":") | .[-1]')
+                LINE=$(echo "$issue" | jq -r '.line // "N/A"')
+        
+                get_code_context "$COMPONENT" "$LINE" "$MESSAGE" "$SEVERITY" >> "$VULN_DETAILS_FILE"
+            done
+          fi
+        
+          # Récupérer et traiter les Security Hotspots
+          if [ "$SECURITY_HOTSPOTS" -gt 0 ]; then
+            echo "Fetching security hotspot details with code context..."
+            curl -s -u "$USER_TOKEN:" \
+              "$SONAR_URL/api/hotspots/search?projectKey=$PROJECT_KEY&ps=500" | \
+              jq -r '.hotspots[] | @json' | while IFS= read -r hotspot; do
+                VULNERABILITY_PROBABILITY=$(echo "$hotspot" | jq -r '.vulnerabilityProbability // "MEDIUM"')
+                MESSAGE=$(echo "$hotspot" | jq -r '.message')
+                COMPONENT=$(echo "$hotspot" | jq -r '.component | split(":") | .[-1]')
+                LINE=$(echo "$hotspot" | jq -r '.line // "N/A"')
+                SECURITY_CATEGORY=$(echo "$hotspot" | jq -r '.securityCategory // "unknown"')
+                STATUS=$(echo "$hotspot" | jq -r '.status // "TO_REVIEW"')
+        
+                # Formatter le message avec la catégorie et le statut
+                FORMATTED_MESSAGE="[$SECURITY_CATEGORY] $MESSAGE (Status: $STATUS)"
+        
+                get_code_context "$COMPONENT" "$LINE" "$FORMATTED_MESSAGE" "$VULNERABILITY_PROBABILITY" >> "$HOTSPOTS_DETAILS_FILE"
+            done
+          fi
+        
+          # Créer les fichiers temporaires pour les code smells
+          SMELLS_CRITICAL_FILE=$(mktemp)
+          SMELLS_OTHER_FILE=$(mktemp)
+        
+          # Récupérer et traiter les code smells
+          echo "Fetching code smell details..."
+          curl -s -u "$USER_TOKEN:" \
+            "$SONAR_URL/api/issues/search?componentKeys=$PROJECT_KEY&types=CODE_SMELL&ps=500" | \
+            jq -r '.issues[] | @json' | while IFS= read -r issue; do
+              SEVERITY=$(echo "$issue" | jq -r '.severity')
+              MESSAGE=$(echo "$issue" | jq -r '.message')
+              COMPONENT=$(echo "$issue" | jq -r '.component | split(":") | .[-1]')
+              LINE=$(echo "$issue" | jq -r '.line // "N/A"')
+        
+              if [ "$SEVERITY" = "CRITICAL" ]; then
+                # Code smells CRITICAL avec contexte
+                get_code_context "$COMPONENT" "$LINE" "$MESSAGE" "$SEVERITY" >> "$SMELLS_CRITICAL_FILE"
+              else
+                # Autres code smells en format tableau
+                echo "| $SEVERITY | $MESSAGE | \`$COMPONENT:$LINE\` |" >> "$SMELLS_OTHER_FILE"
+              fi
+          done
+        
+          # Créer le GitHub Step Summary
+          {
+            echo "## 📊 SonarQube Analysis Results"
+            echo ""
+            echo "| Metric | Value |"
+            echo "|--------|-------|"
+            echo "| 🐛 Bugs | $BUGS |"
+            echo "| 🔓 Vulnerabilities | $VULNERABILITIES |"
+            echo "| 🔥 Security Hotspots | $SECURITY_HOTSPOTS |"
+            echo "| 👃 Code Smells | $CODE_SMELLS |"
+            echo ""
+        
+            # Dropdown pour les bugs avec contexte
+            echo "<details>"
+            echo "<summary>🐛 <strong>Bugs Details ($BUGS)</strong></summary>"
+            echo ""
+            if [ -s "$BUGS_DETAILS_FILE" ]; then
+              cat "$BUGS_DETAILS_FILE"
+            else
+              echo "✅ No bugs found!"
+            fi
+            echo ""
+            echo "</details>"
+            echo ""
+        
+            # Dropdown pour les vulnérabilités avec contexte
+            echo "<details>"
+            echo "<summary>🔓 <strong>Vulnerabilities Details ($VULNERABILITIES)</strong></summary>"
+            echo ""
+            if [ -s "$VULN_DETAILS_FILE" ]; then
+              cat "$VULN_DETAILS_FILE"
+            else
+              echo "✅ No vulnerabilities found!"
+            fi
+            echo ""
+            echo "</details>"
+            echo ""
+        
+            # Dropdown pour les Security Hotspots
+            echo "<details>"
+            echo "<summary>🔥 <strong>Security Hotspots Details ($SECURITY_HOTSPOTS)</strong></summary>"
+            echo ""
+            if [ -s "$HOTSPOTS_DETAILS_FILE" ]; then
+              echo "> **Note:** Security Hotspots are security-sensitive pieces of code that need to be manually reviewed."
+              echo "> They are not necessarily vulnerabilities but require developer attention to confirm they are secure."
+              echo ""
+              cat "$HOTSPOTS_DETAILS_FILE"
+            else
+              echo "✅ No security hotspots found!"
+            fi
+            echo ""
+            echo "</details>"
+            echo ""
+        
+            # Dropdown pour les code smells
+            echo "<details>"
+            echo "<summary>👃 <strong>Code Smells Details ($CODE_SMELLS)</strong></summary>"
+            echo ""
+        
+            # Afficher les CRITICAL avec contexte
+            if [ -s "$SMELLS_CRITICAL_FILE" ]; then
+              echo "### 🔴 Critical Code Smells"
+              echo ""
+              cat "$SMELLS_CRITICAL_FILE"
+              echo ""
+            fi
+        
+            # Afficher les autres en tableau
+            if [ -s "$SMELLS_OTHER_FILE" ]; then
+              echo "### 📋 Other Code Smells"
+              echo ""
+              echo "| Severity | Message | Location |"
+              echo "|----------|---------|----------|"
+              cat "$SMELLS_OTHER_FILE"
+            fi
+        
+            if [ ! -s "$SMELLS_CRITICAL_FILE" ] && [ ! -s "$SMELLS_OTHER_FILE" ]; then
+              echo "✅ No code smells found!"
+            fi
+            echo ""
+            echo "</details>"
+            echo ""
+        
+            echo "[🔍 View detailed report in SonarQube →]($SONAR_URL/dashboard?id=$PROJECT_KEY)"
+        
+            # Afficher un avertissement si le quality gate va faire échouer l'action
+            if [ "$FAIL_ON_QUALITY_GATE" = "true" ] && [ "$((BUGS + VULNERABILITIES))" -gt 0 ]; then
+              echo ""
+              echo "---"
+              echo ""
+              echo "## ❌ Quality Gate Failed"
+              echo ""
+              echo "The analysis found **$BUGS bug(s)** and **$VULNERABILITIES vulnerability(ies)**."
+              echo ""
+              echo "This action will fail because \`FAIL_ON_QUALITY_GATE\` is set to \`true\`."
+            fi
+          } >> $GITHUB_STEP_SUMMARY
+        
+          # Nettoyer les fichiers temporaires
+          rm -f "$BUGS_DETAILS_FILE" "$VULN_DETAILS_FILE" "$HOTSPOTS_DETAILS_FILE" "$SMELLS_CRITICAL_FILE" "$SMELLS_OTHER_FILE"
+        
+          # Déterminer si on doit faire échouer (APRÈS avoir tout affiché)
+          if [ "$FAIL_ON_QUALITY_GATE" = "true" ] && [ "$((BUGS + VULNERABILITIES))" -gt 0 ]; then
+            echo ""
+            echo "❌ Quality gate failed: Found $BUGS bugs and $VULNERABILITIES vulnerabilities"
+            SHOULD_FAIL=1
+          fi
+        else
+          echo "❌ Error: Invalid JSON response from SonarQube API"
+          echo ""
+          {
+            echo "## ⚠️ SonarQube Analysis Results"
+            echo ""
+            echo "Failed to fetch metrics from SonarQube API."
+            echo ""
+            echo "**Response received:**"
+            echo "\`\`\`"
+            echo "$RESPONSE"
+            echo "\`\`\`"
+            echo ""
+            echo "[🔍 View report in SonarQube →]($SONAR_URL/dashboard?id=$PROJECT_KEY)"
+          } >> $GITHUB_STEP_SUMMARY
+          SHOULD_FAIL=1
+        fi
+        
+        # Faire échouer l'action UNIQUEMENT à la toute fin, après avoir tout affiché
+        if [ $SHOULD_FAIL -eq 1 ]; then
+          exit 1
+        fi
