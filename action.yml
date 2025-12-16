@@ -6,25 +6,25 @@ inputs:
     required: false
     description: "Working directory for the scan"
     default: './'
-#  AWS_ACCESS_KEY_ID:
-#    required: false
-#    description: "AWS Access Key ID"
-#  AWS_SECRET_ACCESS_KEY:
-#    required: false
-#    description: "AWS Secret Access Key"
-#  AWS_REGION:
-#    required: false
-#    description: "AWS Region"
-#    default: 'eu-west-3'
-#  SONAR_PROJECT_TOKEN_SECRET_PATH:
-#    required: false
-#    description: "AWS Secrets Manager secret name for SonarQube project token"
-#  SONAR_USER_TOKEN_SECRET_PATH:
-#    required: false
-#    description: "AWS Secrets Manager secret name for SonarQube user token"
-#  SONAR_HOST_URL_PATH:
-#    required: false
-#    description: "AWS SSM parameter path for SonarQube host URL"
+  AWS_ACCESS_KEY_ID:
+    required: true
+    description: "AWS Access Key ID"
+  AWS_SECRET_ACCESS_KEY:
+    required: true
+    description: "AWS Secret Access Key"
+  AWS_REGION:
+    required: false
+    description: "AWS Region"
+    default: 'eu-west-3'
+  SONAR_PROJECT_TOKEN_SECRET_PATH:
+    required: true
+    description: "AWS Secrets Manager secret name for SonarQube project token"
+  SONAR_USER_TOKEN_SECRET_PATH:
+    required: true
+    description: "AWS Secrets Manager secret name for SonarQube user token"
+  SONAR_HOST_URL_PATH:
+    required: true
+    description: "AWS SSM parameter path for SonarQube host URL"
   FAIL_ON_QUALITY_GATE:
     description: "Fail the action if quality gate fails"
     required: false
@@ -36,8 +36,8 @@ runs:
     - name: 'AWS Connection'
       uses: aws-actions/configure-aws-credentials@v5
       with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-access-key-id: ${{ inputs.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ inputs.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ inputs.AWS_REGION }}
 
     - name: Get USER TOKEN ARN parameter
@@ -45,7 +45,7 @@ runs:
       shell: bash
       run: |
         PARAM_VALUE=$(aws ssm get-parameter \
-          --name "${{ secrets.SONAR_USER_TOKEN_SECRET_PATH }}" \
+          --name "${{ inputs.SONAR_USER_TOKEN_SECRET_PATH }}" \
           --with-decryption \
           --query "Parameter.Value" \
           --output text)
@@ -57,7 +57,7 @@ runs:
       shell: bash
       run: |
         PARAM_VALUE=$(aws ssm get-parameter \
-          --name "${{ secrets.SONAR_PROJECT_TOKEN_SECRET_PATH }}" \
+          --name "${{ inputs.SONAR_PROJECT_TOKEN_SECRET_PATH }}" \
           --with-decryption \
           --query "Parameter.Value" \
           --output text)
@@ -91,7 +91,7 @@ runs:
       shell: bash
       run: |
         PARAM_VALUE=$(aws ssm get-parameter \
-          --name "${{ secrets.SONAR_HOST_URL_PATH }}" \
+          --name "${{ inputs.SONAR_HOST_URL_PATH }}" \
           --with-decryption \
           --query "Parameter.Value" \
           --output text)
