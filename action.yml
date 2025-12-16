@@ -16,10 +16,10 @@ inputs:
     required: false
     description: "AWS Region"
     default: 'eu-west-3'
-  SONAR_PROJECT_TOKEN_SECRET_NAME:
+  SONAR_PROJECT_TOKEN_SECRET_PATH:
     required: true
     description: "AWS Secrets Manager secret name for SonarQube project token"
-  SONAR_USER_TOKEN_SECRET_NAME:
+  SONAR_USER_TOKEN_SECRET_PATH:
     required: true
     description: "AWS Secrets Manager secret name for SonarQube user token"
   SONAR_HOST_URL_PATH:
@@ -40,12 +40,37 @@ runs:
         aws-secret-access-key: ${{ inputs.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ inputs.AWS_REGION }}
 
+    - name: Get USER TOKEN ARN parameter
+      id: get-user-token-arn
+      shell: bash
+      run: |
+        PARAM_VALUE=$(aws ssm get-parameter \
+        --name "${{ inputs.SONAR_USER_TOKEN_SECRET_PATH }}" \
+        --with-decryption \
+        --query "Parameter.Value" \
+        --output text)
+        echo "$PARAM_VALUE"
+        echo "USER_TOKEN_ARN=$PARAM_VALUE" >> $GITHUB_OUTPUT
+
+    - name: Get PROJECT TOKEN ARN parameter
+      id: get-project-token-arn
+      shell: bash
+      run: |
+        PARAM_VALUE=$(aws ssm get-parameter \
+        --name "${{ inputs.SONAR_PROJECT_TOKEN_SECRET_PATH }}" \
+        --with-decryption \
+        --query "Parameter.Value" \
+        --output text)
+        echo "$PARAM_VALUE"
+        echo "PROJECT_TOKEN_ARN=$PARAM_VALUE" >> $GITHUB_OUTPUT
+
+
     - name: Get PROJECT_TOKEN from Secrets Manager
       id: get-project-token
       shell: bash
       run: |
         SECRET_VALUE=$(aws secretsmanager get-secret-value \
-        --secret-id "${{ inputs.SONAR_PROJECT_TOKEN_SECRET_NAME }}" \
+        --secret-id "${{ steps.get-project-token-arn.outputs.PROJECT_TOKEN_ARN }}" \
         --query "SecretString" \
         --output text)
         echo "::add-mask::$SECRET_VALUE"
@@ -56,7 +81,7 @@ runs:
       shell: bash
       run: |
         SECRET_VALUE=$(aws secretsmanager get-secret-value \
-        --secret-id "${{ inputs.SONAR_USER_TOKEN_SECRET_NAME }}" \
+        --secret-id "${{ steps.get-project-token-arn.outputs.USER_TOKEN_ARN }}" \
         --query "SecretString" \
         --output text)
         echo "::add-mask::$SECRET_VALUE"
