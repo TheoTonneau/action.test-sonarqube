@@ -45,10 +45,10 @@ runs:
       shell: bash
       run: |
         PARAM_VALUE=$(aws ssm get-parameter \
-        --name "${{ inputs.SONAR_USER_TOKEN_SECRET_PATH }}" \
-        --with-decryption \
-        --query "Parameter.Value" \
-        --output text)
+          --name "${{ inputs.SONAR_USER_TOKEN_SECRET_PATH }}" \
+          --with-decryption \
+          --query "Parameter.Value" \
+          --output text)
         echo "$PARAM_VALUE"
         echo "USER_TOKEN_ARN=$PARAM_VALUE" >> $GITHUB_OUTPUT
 
@@ -57,22 +57,21 @@ runs:
       shell: bash
       run: |
         PARAM_VALUE=$(aws ssm get-parameter \
-        --name "${{ inputs.SONAR_PROJECT_TOKEN_SECRET_PATH }}" \
-        --with-decryption \
-        --query "Parameter.Value" \
-        --output text)
+          --name "${{ inputs.SONAR_PROJECT_TOKEN_SECRET_PATH }}" \
+          --with-decryption \
+          --query "Parameter.Value" \
+          --output text)
         echo "$PARAM_VALUE"
         echo "PROJECT_TOKEN_ARN=$PARAM_VALUE" >> $GITHUB_OUTPUT
-
 
     - name: Get PROJECT_TOKEN from Secrets Manager
       id: get-project-token
       shell: bash
       run: |
         SECRET_VALUE=$(aws secretsmanager get-secret-value \
-        --secret-id "${{ steps.get-project-token-arn.outputs.PROJECT_TOKEN_ARN }}" \
-        --query "SecretString" \
-        --output text)
+          --secret-id "${{ steps.get-project-token-arn.outputs.PROJECT_TOKEN_ARN }}" \
+          --query "SecretString" \
+          --output text)
         echo "::add-mask::$SECRET_VALUE"
         echo "PROJECT_TOKEN=$SECRET_VALUE" >> $GITHUB_OUTPUT
 
@@ -81,9 +80,9 @@ runs:
       shell: bash
       run: |
         SECRET_VALUE=$(aws secretsmanager get-secret-value \
-        --secret-id "${{ steps.get-user-token-arn.outputs.USER_TOKEN_ARN }}" \
-        --query "SecretString" \
-        --output text)
+          --secret-id "${{ steps.get-user-token-arn.outputs.USER_TOKEN_ARN }}" \
+          --query "SecretString" \
+          --output text)
         echo "::add-mask::$SECRET_VALUE"
         echo "USER_TOKEN=$SECRET_VALUE" >> $GITHUB_OUTPUT
 
@@ -92,10 +91,10 @@ runs:
       shell: bash
       run: |
         PARAM_VALUE=$(aws ssm get-parameter \
-        --name "${{ inputs.SONAR_HOST_URL_PATH }}" \
-        --with-decryption \
-        --query "Parameter.Value" \
-        --output text)
+          --name "${{ inputs.SONAR_HOST_URL_PATH }}" \
+          --with-decryption \
+          --query "Parameter.Value" \
+          --output text)
         echo "$PARAM_VALUE"
         echo "HOST_URL=$PARAM_VALUE" >> $GITHUB_OUTPUT
 
@@ -167,9 +166,9 @@ runs:
             sed -n "${start_line},${end_line}p" "$file" | nl -ba -v $start_line -w 4 -s " | " | while IFS= read -r code_line; do
               current_line=$(echo "$code_line" | awk -F' \\| ' '{print $1}' | xargs)
               if [ "$current_line" -eq "$line" ]; then
-                echo "➤ $code_line  ⚠️"
+                echo "➤   $code_line  ⚠️"
               else
-                echo "   $code_line"
+                echo "    $code_line"
               fi
             done
         
