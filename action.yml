@@ -81,7 +81,7 @@ runs:
       shell: bash
       run: |
         SECRET_VALUE=$(aws secretsmanager get-secret-value \
-        --secret-id "${{ steps.get-project-token-arn.outputs.USER_TOKEN_ARN }}" \
+        --secret-id "${{ steps.get-user-token-arn.outputs.USER_TOKEN_ARN }}" \
         --query "SecretString" \
         --output text)
         echo "::add-mask::$SECRET_VALUE"
