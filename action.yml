@@ -166,9 +166,9 @@ runs:
             sed -n "${start_line},${end_line}p" "$file" | nl -ba -v $start_line -w 4 -s " | " | while IFS= read -r code_line; do
               current_line=$(echo "$code_line" | awk -F' \\| ' '{print $1}' | xargs)
               if [ "$current_line" -eq "$line" ]; then
-                echo "➤   $code_line  ⚠️"
+                echo "➤ $code_line  ⚠️"
               else
-                echo "    $code_line"
+                echo "  $code_line"
               fi
             done
         
